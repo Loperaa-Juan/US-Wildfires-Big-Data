@@ -7,7 +7,10 @@ authors = [
     { name = "Juan José Lopera Londoño", email = "jjlopera.tech@gmail.com" }
 ]
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "kagglehub>=1.0.2",
+    "pandas>=3.0.6",
+]
 
 [project.scripts]
 us-wildfires-big-data = "us_wildfires_big_data:main"
