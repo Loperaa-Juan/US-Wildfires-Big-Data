@@ -1,0 +1,17 @@
+[project]
+name = "us-wildfires-big-data"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Juan José Lopera Londoño", email = "jjlopera.tech@gmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = []
+
+[project.scripts]
+us-wildfires-big-data = "us_wildfires_big_data:main"
+
+[build-system]
+requires = ["uv_build>=0.12.18,<0.13.0"]
+build-backend = "uv_build"
