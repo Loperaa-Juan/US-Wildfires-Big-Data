@@ -11,22 +11,23 @@ from pathlib import Path
 
 import kagglehub
 
-# Define the specific route to store the raw data
-ROOT = Path(__file__).resolve().parent.parent
-RAW_DATA = ROOT / "data" / "raw"
-SQLITE_NAME = "FPA_FOD_20170508.sqlite"
+from us_wildfires_big_data.config import KAGGLE_DATASET, RAW_DATA, SQLITE_PATH
 
-target = RAW_DATA / SQLITE_NAME
 
-if target.exists():
-    print("Dataset already present at:", target)
-else:
-    
-    path = Path(kagglehub.dataset_download("rtatman/188-million-us-wildfires"))
+def main() -> None:
+    if SQLITE_PATH.exists():
+        print("Dataset already present at:", SQLITE_PATH)
+        return
+
+    path = Path(kagglehub.dataset_download(KAGGLE_DATASET))
     print("Path to dataset files:", path)
 
     # Copy the sqlite database into data/raw/
     source = next(path.rglob("*.sqlite"))
     RAW_DATA.mkdir(parents=True, exist_ok=True)
-    shutil.copy(source, target)
-    print("Dataset copied to:", target)
+    shutil.copy(source, SQLITE_PATH)
+    print("Dataset copied to:", SQLITE_PATH)
+
+
+if __name__ == "__main__":
+    main()
