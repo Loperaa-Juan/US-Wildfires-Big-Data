@@ -1,0 +1,78 @@
+# The whole system starts with one command:
+#
+#   docker compose up --build
+#
+# MongoDB and the Dask cluster start, then the `etl` service runs the full ingestion pipeline
+# (download → transform → clean → load into MongoDB) on that cluster and exits.
+
+# Shared settings of every container that runs project code (Dask cluster and ETL).
+# They all see the dataset at the same path (/app/data) and reach MongoDB by its service name.
+x-project: &project
+  build: .
+  image: us-wildfires-big-data
+  # Run as the host user so the files written to ./data are not owned by root
+  user: "${UID:-1000}:${GID:-1000}"
+  environment: &project-env
+    HOME: /tmp
+    DATA_DIR: /app/data
+    MONGO_URI: mongodb://mongo:27017
+    DASK_SCHEDULER: tcp://dask-scheduler:8786
+  volumes:
+    - ./data:/app/data
+
+services:
+  mongo:
+    image: mongo:8.0
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  dask-scheduler:
+    <<: *project
+    command: dask scheduler
+    ports:
+      - "8786:8786" # scheduler
+      - "8787:8787" # dashboard: http://localhost:8787
+
+  dask-worker:
+    <<: *project
+    # Two worker containers that together run one single-threaded worker per logical processor
+    # of the machine (nproc / 2 each). DASK_NWORKERS overrides the number per container.
+    command: >-
+      sh -c 'exec dask worker tcp://dask-scheduler:8786 --nthreads 1
+      --nworkers "$${DASK_NWORKERS:-$$(( $$(nproc) / 2 > 0 ? $$(nproc) / 2 : 1 ))}"'
+    deploy:
+      replicas: 2
+    depends_on:
+      dask-scheduler:
+        condition: service_started
+      mongo:
+        condition: service_healthy
+
+  # Runs the full pipeline once and exits. Steps whose output already exists are skipped.
+  # A single step can also be run by hand, e.g.:
+  #   docker compose run --rm etl python -m us_wildfires_big_data.etl.clean
+  etl:
+    <<: *project
+    command: python -m us_wildfires_big_data.etl.pipeline
+    restart: "no"
+    environment:
+      <<: *project-env
+      # Read from the shell or from a local .env file (never committed)
+      KAGGLE_USERNAME: ${KAGGLE_USERNAME:-}
+      KAGGLE_KEY: ${KAGGLE_KEY:-}
+    depends_on:
+      mongo:
+        condition: service_healthy
+      dask-worker:
+        condition: service_started
+
+volumes:
+  mongo-data:
