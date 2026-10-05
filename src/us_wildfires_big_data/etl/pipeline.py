@@ -8,8 +8,8 @@ redo the work. To rebuild a step, delete its output (data/processed/... or the M
 collection) or run that step's module directly, e.g. `python -m us_wildfires_big_data.etl.clean`.
 """
 
-import dask.dataframe as dd
 from pymongo import MongoClient
+import pyarrow.parquet as pq
 
 from us_wildfires_big_data.config import (
     FIRES_CLEAN,
@@ -23,14 +23,25 @@ from us_wildfires_big_data.etl import clean, download, load_mongo, transform
 
 def mongo_is_loaded() -> bool:
     """True when the collection already holds every row of the clean dataset."""
-    with MongoClient(MONGO_URI) as client:
-        loaded = client[MONGO_DB][MONGO_COLLECTION].count_documents({})
-    return loaded == len(dd.read_parquet(FIRES_CLEAN))
+    try:
+        with MongoClient(MONGO_URI) as client:
+            loaded = client[MONGO_DB][MONGO_COLLECTION].count_documents({})
+        
+        if loaded == 0 or not FIRES_CLEAN.exists():
+            return False
+
+        dataset = pq.ParquetDataset(FIRES_CLEAN)
+        total_rows = sum(fragment.metadata.num_rows for fragment in dataset.fragments)
+        
+        return loaded == total_rows
+    except Exception as e:
+        print(f"Warning: Could not verify MongoDB row count ({e}). Proceeding to load.")
+        return False
 
 
 def main() -> None:
     print("[1/4] Download")
-    download.main()  # skips by itself when the SQLite database is already there
+    download.main()
 
     print("[2/4] Transform")
     if FIRES_CSV.exists():
