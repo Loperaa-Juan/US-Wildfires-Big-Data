@@ -29,5 +29,15 @@ is downloaded from Kaggle, cleaned with Dask and loaded into MongoDB as GeoJSON 
    docker compose up --build
    ```
 
-   This starts MongoDB and the Dask cluster and runs the whole pipeline. When it finishes, the
-   data is in `mongodb://localhost:27017` (database `wildfires`, collection `fires`).
+   This starts MongoDB, the Dask cluster and the Spark cluster (one master, two workers), and
+   runs the whole pipeline:
+
+   1. The `etl` service downloads, cleans and loads the fires with Dask into
+      `mongodb://localhost:27017` (database `wildfires`, collection `fires`).
+   2. Then the `spark` service computes the spatial and temporal aggregations and saves them
+      in new collections: `fires_by_grid`, `fires_hotspots`, `fires_by_hour`,
+      `fires_by_weekday`, `fires_by_month`, `fires_by_year`, `fires_by_state` and
+      `fires_by_cause`.
+
+   Dashboards: Dask at http://localhost:8787 and Spark at http://localhost:8080. To run the
+   Spark aggregations again: `docker compose run --rm spark`.
