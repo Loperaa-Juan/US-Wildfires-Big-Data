@@ -1,5 +1,6 @@
-# One image for the Dask scheduler, the Dask workers and the ETL scripts, so the client and
-# the cluster always run the same Python, the same Dask version and the same project code.
+# One image for the Dask scheduler, the Dask workers, the ETL scripts and the Flask API, so the
+# client and the cluster always run the same Python, the same Dask version and the same project
+# code.
 FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim
 
 WORKDIR /app
