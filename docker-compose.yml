@@ -34,6 +34,17 @@ services:
       timeout: 5s
       retries: 12
 
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.spark
+    command: python app.py
+    volumes:
+      - .:/app
+    depends_on:
+      mongo:
+        condition: service_healthy
+
   dask-scheduler:
     <<: *project
     command: dask scheduler
@@ -47,7 +58,7 @@ services:
     # of the machine (nproc / 2 each). DASK_NWORKERS overrides the number per container.
     command: >-
       sh -c 'exec dask worker tcp://dask-scheduler:8786 --nthreads 1
-      --nworkers "$${DASK_NWORKERS:-$$(( $$(nproc) / 2 > 0 ? $$(nproc) / 2 : 1 ))}"'
+      --nworkers "$${DASK_NWORKERS:-$$(( $$(nproc) / 2 > 0 ?$$(nproc) / 2 : 1 ))}"'
     deploy:
       replicas: 2
     depends_on:
@@ -76,3 +87,4 @@ services:
 
 volumes:
   mongo-data:
+  
