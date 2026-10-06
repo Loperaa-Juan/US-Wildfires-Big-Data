@@ -8,7 +8,9 @@
 # Shared settings of every container that runs project code (Dask cluster and ETL).
 # They all see the dataset at the same path (/app/data) and reach MongoDB by its service name.
 x-project: &project
-  build: .
+  build:
+    context: .
+    dockerfile: docker/dask.Dockerfile
   image: us-wildfires-big-data
   # Run as the host user so the files written to ./data are not owned by root
   user: "${UID:-1000}:${GID:-1000}"
@@ -39,7 +41,7 @@ services:
   spark:
     build:
       context: .
-      dockerfile: Dockerfile.spark
+      dockerfile: docker/spark.Dockerfile
     command: python -m us_wildfires_big_data.spark.analysis
     environment:
       PYTHONPATH: /app/src
