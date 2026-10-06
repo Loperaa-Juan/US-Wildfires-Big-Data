@@ -9,9 +9,24 @@ import pandas as pd
 from us_wildfires_big_data.config import FIRES_CSV, SQLITE_PATH
 
 # Create a list with the columns that we'll include in the .csv dataset
-columns = ["FOD_ID", "FIRE_NAME", "FIRE_YEAR", "DISCOVERY_DATE", "DISCOVERY_TIME",
-        "CONT_DATE", "CONT_TIME", "STAT_CAUSE_DESCR", "FIRE_SIZE", "FIRE_SIZE_CLASS",
-        "OWNER_DESCR", "STATE", "COUNTY", "LATITUDE", "LONGITUDE"]
+columns = [
+    "FOD_ID",
+    "FIRE_NAME",
+    "FIRE_YEAR",
+    "DISCOVERY_DATE",
+    "DISCOVERY_TIME",
+    "CONT_DATE",
+    "CONT_TIME",
+    "STAT_CAUSE_DESCR",
+    "FIRE_SIZE",
+    "FIRE_SIZE_CLASS",
+    "OWNER_DESCR",
+    "STATE",
+    "COUNTY",
+    "LATITUDE",
+    "LONGITUDE",
+]
+
 
 # Convert the date from julian to a normal date (time 00:00)
 def julian_to_date(date):
@@ -27,7 +42,9 @@ def hhmm_to_hour(time):
 def julian_to_iso(date, time):
     dt = pd.to_datetime(date - 2440587.5, unit="D")
     hhmm = pd.to_numeric(time, errors="coerce")
-    return dt + pd.to_timedelta((hhmm // 100) * 60 + hhmm % 100, unit="min").fillna(pd.Timedelta(0))
+    return dt + pd.to_timedelta((hhmm // 100) * 60 + hhmm % 100, unit="min").fillna(
+        pd.Timedelta(0)
+    )
 
 
 def main() -> None:
@@ -36,7 +53,9 @@ def main() -> None:
     FIRES_CSV.parent.mkdir(parents=True, exist_ok=True)
 
     first = True
-    for chunk in pd.read_sql(f"SELECT {', '.join(columns)} FROM Fires", con, chunksize=100_000):
+    for chunk in pd.read_sql(
+        f"SELECT {', '.join(columns)} FROM Fires", con, chunksize=100_000
+    ):
         # 47% of the records have no DISCOVERY_TIME. Filling it with 00:00 would mix them with
         # the real midnight fires, so the date and the hour are kept apart and the hour stays null
         chunk["discovery_date"] = julian_to_date(chunk.pop("DISCOVERY_DATE"))
