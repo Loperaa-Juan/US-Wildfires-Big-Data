@@ -42,16 +42,23 @@ x-spark: &spark
 services:
   mongo:
     image: mongo:8.0
+    # Its logs are kept out of the `docker compose up` console (see them with
+    # `docker compose logs mongo`), and --quiet drops most connection messages from them
+    attach: false
+    command: ["mongod", "--quiet"]
     restart: unless-stopped
     ports:
       - "27017:27017"
     volumes:
       - mongo-data:/data/db
+    # Checked every second while it starts (so the stages start without delay), then every 30 s
     healthcheck:
       test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
-      interval: 5s
+      start_period: 60s
+      start_interval: 1s
+      interval: 30s
       timeout: 5s
-      retries: 12
+      retries: 3
 
   # Stage 2 (Spark). The master waits until every Dask stage container has exited: the ETL
   # and also the scheduler and workers, which need a few seconds to shut down after the ETL
