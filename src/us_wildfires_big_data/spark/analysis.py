@@ -1,93 +1,92 @@
 """
 Spark stage: reads the GeoJSON fires from MongoDB (loaded by etl/load_mongo.py) with the
-MongoDB Spark Connector and runs distributed aggregations over them.
+MongoDB Spark Connector, computes spatial and temporal aggregations on the Spark cluster and
+saves each result in its own MongoDB collection (replacing it if it already exists).
+
+| Collection         | One document per                                         |
+|--------------------|----------------------------------------------------------|
+| fires_by_grid      | grid cell with fires (GRID_CELL_DEGREES side), + polygon |
+| fires_hotspots     | grid cell with z-score >= HOTSPOT_MIN_ZSCORE, ranked     |
+| fires_by_hour      | discovery hour 0-23 (fires without a time are left out)  |
+| fires_by_weekday   | day of the week (1 = Sunday)                             |
+| fires_by_month     | month 1-12                                               |
+| fires_by_year      | year 1992-2015                                           |
+| fires_by_state     | state                                                    |
+| fires_by_cause     | cause                                                    |
 
 Run it with `python -m us_wildfires_big_data.spark.analysis` (the `spark` service in
 docker-compose does it). Settings come from us_wildfires_big_data.config (see .env.example).
 """
 
-from pyspark.sql import functions as F
+import time
 
+from pymongo import GEOSPHERE, MongoClient
+from pyspark import StorageLevel
+from pyspark.sql import DataFrame
+
+from us_wildfires_big_data.config import (
+    GRID_CELL_DEGREES,
+    HOTSPOT_MIN_ZSCORE,
+    MONGO_DB,
+    MONGO_URI,
+)
+from us_wildfires_big_data.spark import aggregations as agg
 from us_wildfires_big_data.spark.session import create_spark_session
 
+# Collections whose `geometry` is a cell polygon; they get a 2dsphere index
+GEO_COLLECTIONS = ["fires_by_grid", "fires_hotspots"]
 
-def main():
-    print("Iniciando SparkSession...")
+
+def save(df: DataFrame, collection: str) -> int:
+    """Replace `collection` with the rows of `df` and return how many were written."""
+    start = time.perf_counter()
+    df = df.cache()  # counted and written: computed once
+    rows = df.count()
+    df.write.format("mongodb").mode("overwrite").option("collection", collection).save()
+    df.unpersist()
+    print(
+        f"  {collection:<18} {rows:>6,} documents  {time.perf_counter() - start:6.1f} s"
+    )
+    return rows
+
+
+def create_geo_indexes() -> None:
+    with MongoClient(MONGO_URI) as client:
+        for name in GEO_COLLECTIONS:
+            client[MONGO_DB][name].create_index([("geometry", GEOSPHERE)])
+
+
+def main() -> None:
     spark = create_spark_session()
     spark.sparkContext.setLogLevel("WARN")
-
     try:
-        print("\n[1/4] Leyendo datos GeoJSON desde MongoDB con PySpark...")
-        # Leemos permitiendo la inferencia de esquema
-        df_raw = spark.read.format("mongodb").load()
+        print(f"Spark {spark.version} on {spark.sparkContext.master}")
+        print(f"Spark UI: {spark.sparkContext.uiWebUrl}")
 
-        total_records = df_raw.count()
-        print(
-            f"\n[2/4] Conteo total de registros procesados por Spark: {total_records:,}"
+        fires = agg.flatten(
+            spark.read.format("mongodb").schema(agg.FIRES_SCHEMA).load()
         )
+        # Every aggregation below reads the fires, so they are read from MongoDB only once
+        fires = fires.persist(StorageLevel.MEMORY_AND_DISK)
+        print(f"Read {fires.count():,} fires from MongoDB")
 
-        print("\n[3/4] Aplanando el objeto GeoJSON 'properties'...")
-        if "properties" in df_raw.columns:
-            df_flat = df_raw.select("properties.*")
-        else:
-            df_flat = df_raw
+        print("Saving aggregations:")
+        grid = agg.grid_counts(fires, GRID_CELL_DEGREES).cache()
+        save(grid, "fires_by_grid")
+        save(agg.hotspots(grid, HOTSPOT_MIN_ZSCORE), "fires_hotspots")
+        save(agg.by_hour(fires), "fires_by_hour")
+        save(agg.by_weekday(fires), "fires_by_weekday")
+        save(agg.by_month(fires), "fires_by_month")
+        save(agg.by_year(fires), "fires_by_year")
+        save(agg.by_state(fires), "fires_by_state")
+        save(agg.by_cause(fires), "fires_by_cause")
+        create_geo_indexes()
 
-        # Mapeamos nombres de columnas a minúsculas para unificar
-        for col_name in df_flat.columns:
-            df_flat = df_flat.withColumnRenamed(col_name, col_name.lower())
-
-        print("\n[4/4] Ejecutando agregaciones distribuidas con PySpark:")
-
-        # Identificar dinámicamente las columnas disponibles
-        cols = df_flat.columns
-
-        # 1. Agregación por Año
-        year_col = next((c for c in ["fire_year", "year"] if c in cols), None)
-        if year_col:
-            print(f"\n--- Top 5 Años con mayor número de incendios ({year_col}) ---")
-            df_flat.filter(F.col(year_col).isNotNull()).groupBy(
-                year_col
-            ).count().orderBy(F.col("count").desc()).show(5)
-
-        # 2. Agregación por Estado
-        state_col = next((c for c in ["state", "st"] if c in cols), None)
-        if state_col:
-            print(f"\n--- Top 10 Estados con más incendios ({state_col}) ---")
-            df_flat.filter(F.col(state_col).isNotNull()).groupBy(
-                state_col
-            ).count().orderBy(F.col("count").desc()).show(10)
-
-        # 3. Agregación por Causa
-        cause_col = next(
-            (
-                c
-                for c in ["stat_cause_descr", "nwcg_general_cause", "cause"]
-                if c in cols
-            ),
-            None,
-        )
-        if cause_col:
-            print(f"\n--- Top 10 Causas Principales de Incendios ({cause_col}) ---")
-            df_flat.filter(F.col(cause_col).isNotNull()).groupBy(
-                cause_col
-            ).count().orderBy(F.col("count").desc()).show(10, truncate=False)
-
-        # 4. Promedio de Área Quemada
-        size_col = next((c for c in ["fire_size", "shape_area"] if c in cols), None)
-        if state_col and size_col:
-            print(
-                f"\n--- Promedio de Área Quemada (acres) por Top 5 Estados ({size_col}) ---"
-            )
-            df_flat.filter(
-                F.col(state_col).isNotNull() & F.col(size_col).isNotNull()
-            ).groupBy(state_col).agg(
-                F.count("*").alias("total_incendios"),
-                F.round(F.avg(size_col), 2).alias("avg_acres_burned"),
-                F.round(F.sum(size_col), 2).alias("total_acres_burned"),
-            ).orderBy(F.col("total_incendios").desc()).show(5)
-
-        print("\n¡Análisis directo con PySpark completado con éxito!")
-
+        print(f"\nTop 5 hotspots ({GRID_CELL_DEGREES}° cells):")
+        hot = spark.read.format("mongodb").option("collection", "fires_hotspots").load()
+        hot.orderBy("rank").select(
+            "rank", "fires", "zscore", "acres_burned", "center.coordinates"
+        ).show(5, truncate=False)
     finally:
         spark.stop()
 
