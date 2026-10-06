@@ -2,8 +2,9 @@
 #
 #   docker compose up --build
 #
-# MongoDB and the Dask cluster start, then the `etl` service runs the full ingestion pipeline
-# (download → transform → clean → load into MongoDB) on that cluster and exits.
+# MongoDB, the Dask cluster and the Spark cluster start. The `etl` service runs the ingestion
+# pipeline (download → transform → clean → load into MongoDB) on the Dask cluster and exits;
+# then the `spark` service runs the aggregations on the Spark cluster and exits.
 
 # Shared settings of every container that runs project code (Dask cluster and ETL).
 # They all see the dataset at the same path (/app/data) and reach MongoDB by its service name.
@@ -22,6 +23,14 @@ x-project: &project
   volumes:
     - ./data:/app/data
 
+# Shared settings of the Spark master, the workers and the driver: one image, so they all run
+# the same Spark, Python and project code (executors run the driver's Python functions).
+x-spark: &spark
+  build:
+    context: .
+    dockerfile: docker/spark.Dockerfile
+  image: us-wildfires-big-data-spark
+
 services:
   mongo:
     image: mongo:8.0
@@ -36,18 +45,44 @@ services:
       timeout: 5s
       retries: 12
 
-  # Spark stage: reads the fires from MongoDB and runs the aggregations, then exits.
+  spark-master:
+    <<: *spark
+    command: spark-class org.apache.spark.deploy.master.Master --host spark-master
+    ports:
+      - "8080:8080" # master UI (workers and running applications): http://localhost:8080
+
+  spark-worker:
+    <<: *spark
+    command: spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
+    environment:
+      # Resources each worker offers to the executors; change them in .env
+      SPARK_WORKER_CORES: ${SPARK_WORKER_CORES:-2}
+      SPARK_WORKER_MEMORY: ${SPARK_WORKER_MEMORY:-3g}
+    deploy:
+      replicas: ${SPARK_WORKERS:-2}
+    depends_on:
+      - spark-master
+
+  # Spark driver: reads the fires from MongoDB, runs the aggregations on the cluster, saves
+  # them in new collections and exits. It waits for the ETL to finish loading MongoDB.
   # Run it again with: docker compose run --rm spark
   spark:
-    build:
-      context: .
-      dockerfile: docker/spark.Dockerfile
+    <<: *spark
     command: python -m us_wildfires_big_data.spark.analysis
+    restart: "no"
     environment:
       MONGO_URI: mongodb://mongo:27017
+      SPARK_MASTER: spark://spark-master:7077
+      SPARK_EXECUTOR_MEMORY: ${SPARK_EXECUTOR_MEMORY:-2g}
+    ports:
+      - "4040:4040" # application UI (jobs, stages, executors) while it runs
     depends_on:
       mongo:
         condition: service_healthy
+      etl:
+        condition: service_completed_successfully
+      spark-worker:
+        condition: service_started
 
   dask-scheduler:
     <<: *project
