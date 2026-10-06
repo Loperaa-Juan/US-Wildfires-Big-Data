@@ -27,5 +27,13 @@ def dask_client() -> Iterator[Client]:
             yield client
 
 
+def shutdown_cluster() -> None:
+    """Stop the docker-compose Dask scheduler and its workers, so their containers exit and do
+    not hold memory and CPU while the Spark stage runs. Without DASK_SCHEDULER it does nothing:
+    a local cluster already stops at the end of each `with dask_client()` block."""
+    if DASK_SCHEDULER:
+        Client(DASK_SCHEDULER).shutdown()
+
+
 def worker_count(client: Client) -> int:
     return len(client.scheduler_info()["workers"])

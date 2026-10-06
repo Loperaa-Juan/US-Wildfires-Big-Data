@@ -20,6 +20,7 @@ from us_wildfires_big_data.config import (
     MONGO_URI,
 )
 from us_wildfires_big_data.etl import clean, download, load_mongo, transform
+from us_wildfires_big_data.etl.cluster import shutdown_cluster
 
 
 def mongo_is_loaded() -> bool:
@@ -62,6 +63,9 @@ def main() -> None:
     else:
         load_mongo.main()
 
+    # Only after a successful run: if a step fails, the cluster stays up to rerun it by hand
+    print("Stopping the Dask cluster")
+    shutdown_cluster()
     print("Pipeline finished")
 
 
