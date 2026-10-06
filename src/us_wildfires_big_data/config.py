@@ -34,3 +34,10 @@ COUNTIES_ZIP = RAW_DATA / "cb_2021_us_county_20m.zip"
 # start a local cluster with DASK_WORKERS workers, one per logical processor by default
 DASK_SCHEDULER = os.getenv("DASK_SCHEDULER")
 DASK_WORKERS = int(os.getenv("DASK_WORKERS", os.cpu_count() or 1))
+
+# Spark: master URL (local[*] runs Spark inside the driver's process) and the MongoDB connector
+SPARK_MASTER = os.getenv("SPARK_MASTER", "local[*]")
+SPARK_DRIVER_MEMORY = os.getenv("SPARK_DRIVER_MEMORY", "4g")
+MONGO_SPARK_CONNECTOR = os.getenv(
+    "MONGO_SPARK_CONNECTOR", "org.mongodb.spark:mongo-spark-connector_2.12:10.4.0"
+)

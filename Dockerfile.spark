@@ -14,4 +14,7 @@ RUN pip install --no-cache-dir pyspark==3.5.1 pymongo
 # Copiar el código del proyecto
 COPY . /app
 
-CMD ["python", "app.py"]
+# The package lives in src/ and is not installed, so put it on the import path
+ENV PYTHONPATH=/app/src
+
+CMD ["python", "-m", "us_wildfires_big_data.spark.analysis"]
