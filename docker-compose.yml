@@ -9,10 +9,12 @@
 #             the Dask scheduler and workers and exits.
 #   2. Spark: only then the Spark master and workers start, and the `spark` service runs the
 #             aggregations on them, saves them in MongoDB and exits.
+#   3. API:   the Flask API starts and serves the fires and the Spark results on
+#             http://localhost:5000.
 #
-# If the Dask stage fails, the Spark stage does not start.
+# If a stage fails, the next one does not start.
 
-# Shared settings of every container that runs project code (Dask cluster and ETL).
+# Shared settings of the containers that run the project image (Dask cluster, ETL and API).
 # They all see the dataset at the same path (/app/data) and reach MongoDB by its service name.
 x-project: &project
   build:
@@ -142,6 +144,37 @@ services:
         condition: service_healthy
       dask-worker:
         condition: service_started
+
+  # Stage 3 (API). Starts when the Spark results are in MongoDB; gunicorn runs the Flask app
+  # with 2 processes (each with its own MongoDB client) of 4 threads.
+  api:
+    <<: *project
+    command: >-
+      gunicorn --bind 0.0.0.0:5000 --workers 2 --threads 4 --access-logfile -
+      "us_wildfires_big_data.api.app:create_app()"
+    restart: unless-stopped
+    environment:
+      MONGO_URI: mongodb://mongo:27017
+    volumes: []
+    ports:
+      - "5000:5000" # http://localhost:5000/health
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://localhost:5000/health', timeout=3)
+      # Every second while it starts, then every 30 s (each check is one access log line)
+      start_period: 60s
+      start_interval: 1s
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    depends_on:
+      mongo:
+        condition: service_healthy
+      spark:
+        condition: service_completed_successfully
 
 volumes:
   mongo-data:
