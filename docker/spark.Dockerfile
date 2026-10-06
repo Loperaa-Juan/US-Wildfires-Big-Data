@@ -1,20 +1,24 @@
-FROM python:3.11-slim-bookworm
+# Image for the Spark stage. Same Python and locked dependencies as the Dask image, plus the
+# `spark` extra (pyspark) and the Java runtime that Spark needs (Spark 4 requires Java 17+).
+FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim
 
 WORKDIR /app
 
-# Instalar OpenJDK 17 y herramientas necesarias
-RUN apt-get update && apt-get install -y default-jre-headless procps curl && rm -rf /var/lib/apt-get/lists/*
+# Debian bookworm's default JRE is OpenJDK 17; procps provides `ps`, used by Spark's scripts
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends default-jre-headless procps \
+    && rm -rf /var/lib/apt/lists/*
 
-# Copiar archivos de configuración
-COPY pyproject.toml README.md ./
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PROJECT_ENVIRONMENT=/opt/venv \
+    PATH="/opt/venv/bin:$PATH"
 
-# Instalar PySpark y PyMongo en el entorno de Python 3.11
-RUN pip install --no-cache-dir pyspark==3.5.1 pymongo
+# Dependencies first, so this layer is cached while only the code changes
+COPY pyproject.toml uv.lock README.md ./
+RUN uv sync --locked --no-dev --extra spark --no-install-project
 
-# Copiar el código del proyecto
-COPY . /app
-
-# The package lives in src/ and is not installed, so put it on the import path
-ENV PYTHONPATH=/app/src
+COPY src ./src
+RUN uv sync --locked --no-dev --extra spark
 
 CMD ["python", "-m", "us_wildfires_big_data.spark.analysis"]

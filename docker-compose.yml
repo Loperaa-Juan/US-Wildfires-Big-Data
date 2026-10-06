@@ -44,10 +44,7 @@ services:
       dockerfile: docker/spark.Dockerfile
     command: python -m us_wildfires_big_data.spark.analysis
     environment:
-      PYTHONPATH: /app/src
       MONGO_URI: mongodb://mongo:27017
-    volumes:
-      - .:/app
     depends_on:
       mongo:
         condition: service_healthy

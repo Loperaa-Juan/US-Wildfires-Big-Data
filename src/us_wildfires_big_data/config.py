@@ -35,9 +35,11 @@ COUNTIES_ZIP = RAW_DATA / "cb_2021_us_county_20m.zip"
 DASK_SCHEDULER = os.getenv("DASK_SCHEDULER")
 DASK_WORKERS = int(os.getenv("DASK_WORKERS", os.cpu_count() or 1))
 
-# Spark: master URL (local[*] runs Spark inside the driver's process) and the MongoDB connector
+# Spark: master URL (local[*] runs Spark inside the driver's process) and the MongoDB connector.
+# The connector must match the Scala version of pyspark: Spark 4 is built with Scala 2.13 and
+# needs connector 11.x (10.x is for Spark 3 / Scala 2.12)
 SPARK_MASTER = os.getenv("SPARK_MASTER", "local[*]")
 SPARK_DRIVER_MEMORY = os.getenv("SPARK_DRIVER_MEMORY", "4g")
 MONGO_SPARK_CONNECTOR = os.getenv(
-    "MONGO_SPARK_CONNECTOR", "org.mongodb.spark:mongo-spark-connector_2.12:10.4.0"
+    "MONGO_SPARK_CONNECTOR", "org.mongodb.spark:mongo-spark-connector_2.13:11.1.0"
 )
