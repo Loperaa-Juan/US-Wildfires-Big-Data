@@ -1,0 +1,19 @@
+# Staging: the same stack as docker-compose.yml, started by Jenkins on main to test the API
+# before deploying. Used on top of the main file, as its own compose project:
+#
+#   docker compose -p wildfires-staging -f docker-compose.yml -f jenkins/docker-compose.staging.yml up -d --wait
+#
+# The only difference: no port is published on the host, so staging can run while the deployed
+# stack (project `wildfires`, which publishes them) is up. Jenkins reaches the staging API by
+# joining its network (wildfires-staging_default) and calling http://api:5000.
+services:
+  mongo:
+    ports: !reset []
+  spark-master:
+    ports: !reset []
+  spark:
+    ports: !reset []
+  dask-scheduler:
+    ports: !reset []
+  api:
+    ports: !reset []
