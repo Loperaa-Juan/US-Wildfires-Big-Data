@@ -1,14 +1,16 @@
 # Tests
 
-Unit tests for the ETL code, run with [pytest](https://docs.pytest.org/). They do not need
-MongoDB, Dask or Kaggle.
+Unit tests for the ETL, Spark and API code, run with [pytest](https://docs.pytest.org/). They
+do not need Dask or Kaggle. The API query tests need a MongoDB (`MONGO_URI`) and are skipped
+without one.
 
 ```bash
 uv run pytest
 ```
 
 Jenkins runs the same command (after `uv sync --locked` and `uv run ruff check .`) on every pull
-request into `main`, so any test added here is run there too.
+request into `main` and on every change that reaches `main`, so any test added here is run there
+too.
 
 ## Adding a test
 

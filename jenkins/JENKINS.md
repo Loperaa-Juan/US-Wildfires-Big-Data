@@ -1,57 +1,118 @@
-# Continuous integration (Jenkins)
+# CI/CD with Jenkins
 
-Every pull request into `main` is tested by Jenkins: it installs the dependencies, runs the linter
-(`ruff`) and runs the tests (`pytest`). If any step fails, the build is marked red. Pushing to a
-branch does **not** start a build; only opening a pull request (or adding commits to an open one)
-does.
+Jenkins tests every pull request into `main`. Every change that reaches `main` (a merged pull
+request or a push) is tested, built into Docker images, started, checked through the API and
+deployed.
 
-Right now Jenkins finds pull requests by **scanning** the repository (it asks GitHub every
-5 minutes). Once the repository owner adds a webhook, builds can start right after a pull request
-is opened; see [Later: webhook + ngrok](#later-webhook--ngrok).
+| Event | Job | Stages |
+|---|---|---|
+| Pull request into `main` (opened, or new commits) | `PR-<number>` | Install → Lint → Test |
+| Change that reaches `main` | `main` | Install → Lint → Test → Build images → Start services → API tests → Deploy |
+
+Stages run in order and the build stops at the first failure. **If any test fails, nothing is
+deployed.** Pushes to other branches build nothing.
+
+Jenkins finds new pull requests and changes on `main` by **scanning** the repository every
+5 minutes. A GitHub webhook can make builds start instantly; it needs the repository owner and is
+set up separately in [`WEBHOOK.md`](WEBHOOK.md).
 
 ## How it works
 
 ```
-open PR into main ──► GitHub ◄── every 5 min: "new or updated PRs?" ── Jenkins on localhost:8080
-                                                                              │
-                                                        one job per pull request (PR-1, PR-2…)
-                                                        runs the Jenkinsfile stages:
-                                                        Install → Lint → Test → test report
+ PR opened / merged into main
+            │
+            ▼
+         GitHub ◄── every 5 min: "anything new?" ── Jenkins (container on this PC, port 8090)
+            ▲                                             │
+            └──────── ✓ / ✗ on the commit ────────────────┤  one job per pull request + main
+                                                          │
+                ┌─────────────────────────────────────────┴───────────────────────────┐
+                │ every build                                                         │ main only
+                ▼                                                                     ▼
+   Install: uv sync --locked                          Build images: docker compose build
+   Lint:    uv run ruff check .                       Start services: staging copy of the stack,
+   Test:    uv run pytest → test report                 waits until the API is healthy
+                                                      API tests: curl + jq on the endpoints
+                                                      Deploy: stop staging, start/update the
+                                                        deployed stack (API on localhost:5000)
 ```
 
-1. Someone opens a pull request into `main` (or pushes a new commit to an open one).
-2. Every 5 minutes Jenkins scans the repository for pull requests it has not built yet.
-3. For each one, Jenkins creates a job named after the pull request (`PR-12`), checks out the pull
-   request **merged with the current `main`** (what `main` would look like after merging), and
-   runs the steps in the [`Jenkinsfile`](Jenkinsfile):
-   - **Install**: `uv sync --locked` installs Python 3.13 and the exact versions in `uv.lock`.
-   - **Lint**: `uv run ruff check .`
-   - **Test**: `uv run pytest`, which writes a JUnit report that Jenkins shows on the build page.
-4. When the pull request is merged or closed, Jenkins removes its job on the next scan.
+1. Someone opens a pull request into `main`, adds commits to one, or merges one.
+2. Within 5 minutes Jenkins' scan finds it (**Scan Repository Now** forces it).
+3. Jenkins checks out the code and runs the [`Jenkinsfile`](../Jenkinsfile). A pull request is
+   tested **merged with the current `main`**, so the result is what `main` would look like after
+   merging.
+4. Jenkins posts the result on GitHub as a ✓ or ✗ on the commit.
+
+### Where is it deployed?
+
+**On this PC.** There is no AWS or any other cloud involved. "Deploy" here means: run the
+system's containers (MongoDB, Dask, Spark, API) on the same machine Jenkins runs on, through
+this PC's Docker. After a green build of `main`, the deployed system is at
+http://localhost:5000, and it keeps running until it is replaced by the next deploy.
+
+How Jenkins can do that from inside a container: the Jenkins image has the Docker command line
+but no Docker of its own. The PC's Docker socket (`/var/run/docker.sock`) is mounted into the
+Jenkins container, so every `docker compose ...` in the pipeline is executed by the PC's Docker,
+and the containers it starts run next to Jenkins, not inside it.
+
+```
+ this PC
+ ├── Docker
+ │   ├── jenkins                        ← runs the pipeline, sends docker commands to ↓
+ │   ├── wildfires-staging-*  (during a build: started for the API tests, then removed)
+ │   └── wildfires-*          (the deployed system: API on :5000, MongoDB on :27017, …)
+ └── /var/run/docker.sock  ← shared with the jenkins container
+```
+
+In a company, the same pipeline would usually end differently: *Build images* pushes the images
+to a registry (Docker Hub, AWS ECR…) and *Deploy* tells a server or a cloud service (an AWS EC2
+machine, ECS, Kubernetes…) to run the new images. The stages and the rule "no deploy if a test
+fails" are the same; only the target machine changes. Here the target is this PC.
+
+### Staging and deployed stack
+
+The pipeline starts the system twice from the same images, as two Docker Compose projects:
+
+| | Compose project | Ports on this PC | Purpose |
+|---|---|---|---|
+| Staging | `wildfires-staging` | none ([`docker-compose.staging.yml`](docker-compose.staging.yml) removes them) | Started in every build of `main` to run the API tests against, then removed. Jenkins joins its network and calls `http://api:5000`. |
+| Deployed | `wildfires` | the usual ones: API `5000`, MongoDB `27017`, Spark UI `8080`, Dask `8786`/`8787` | Only updated when every test passed. Stays up. |
+
+Each project keeps its own MongoDB volume, so after the first build the ETL finds the fires
+already loaded and skips the load. Both read the dataset from the build's `data/` folder, so
+the Kaggle download and the Dask cleaning only happen once.
+
+### Files
 
 | File | What it does |
 |---|---|
-| [`Jenkinsfile`](Jenkinsfile) | The pipeline stages. They only run for pull requests whose target is `main` (`when { changeRequest target: 'main' }`). |
-| [`jenkins/Dockerfile`](jenkins/Dockerfile) | The official Jenkins image plus `uv`, the only tool the pipeline needs. Jenkins runs as its own container, apart from the project's `docker-compose.yml`, so running the ETL does not start Jenkins. |
+| [`Jenkinsfile`](../Jenkinsfile) | The pipeline: the stages above and when each one runs. |
+| [`jenkins/Dockerfile`](Dockerfile) | The Jenkins image: Jenkins plus `uv`, the Docker CLI (with compose and buildx) and `jq`. |
+| [`jenkins/docker-compose.staging.yml`](docker-compose.staging.yml) | Turns [`docker-compose.yml`](../docker-compose.yml) into the staging stack (no published ports). |
+| [`jenkins/api-tests.sh`](api-tests.sh) | The API tests: `curl` to `/health`, `/fires/near`, `POST /fires/within`, `/fires/nearest`, `/stats/hotspots` and an invalid request, checking each JSON response with `jq`. |
+| [`tests/`](../tests/README.md) | The unit tests run by the *Test* stage, and how to add one. |
 
-### Why a Multibranch Pipeline job
+### What the course asks, and where it is
 
-A plain **Pipeline** job follows one fixed branch and has no idea what a pull request is. A
-**Multibranch Pipeline** job with a **GitHub** source asks GitHub for the repository's branches and
-pull requests and creates one job for each one it is told to discover. Here it is told to discover
-**only pull requests**, so branches (including `main`) get no job and pushes to them build nothing.
+| Requirement | Where |
+|---|---|
+| Merging into `main` triggers Jenkins | The job discovers `main` (B2); the scan finds the merge. The webhook ([`WEBHOOK.md`](WEBHOOK.md)) makes it instant. |
+| Tests on pull requests; tests and deploy on `main` | `Jenkinsfile`: stage `CI` (pull requests and `main`), stage `CD` with `when { branch 'main' }` |
+| Build the images | Stage *Build images*: `docker compose build` |
+| Docker inside Jenkins | `jenkins/Dockerfile` (Docker CLI) + `/var/run/docker.sock` mounted (A3) |
+| Start the services, wait until the API is healthy | Stage *Start services*: `docker compose up -d --wait` |
+| Basic tests against the API | Stage *API tests*: `jenkins/api-tests.sh` |
+| No deploy if a test fails | *Deploy* is the last stage; any failure before it stops the build |
+| Kaggle token as a Jenkins credential | Credential `kaggle` (B3), used with `withCredentials(...)` as `KAGGLE_USERNAME`/`KAGGLE_KEY` |
 
 ### Things to keep in mind
 
-- **One Jenkins serves the whole team.** The `Jenkinsfile` lives in the repository and Jenkins
-  scans the repository, so a pull request from anyone is built. Teammates do not set up anything.
-- **It only runs while this PC is on** and the Jenkins container is running. Pull requests opened
-  while it is off are found by the next scan after it starts again.
-- **Results are only visible in this Jenkins**, not on the pull request page in GitHub.
-- **Use a GitHub token**, even though the repository is public. Scanning uses the GitHub API, which
-  allows only 60 requests per hour without a token; a scan every 5 minutes runs out of that
-  quickly. With a token the limit is 5,000 per hour. The token only needs to read public
-  repositories, so it works even though the repository belongs to someone else (setup step 4).
+- **One Jenkins serves the whole team.** Changes from anyone are built. Teammates set up nothing.
+- **It only runs while this PC is on.** The deployed system also lives on this PC, so it is only
+  reachable from here (http://localhost:5000).
+- **Teammates see the ✓/✗ on GitHub**, but its *Details* link points to this Jenkins, which only
+  opens on this PC.
 
 ## Why there is no Maven
 
@@ -70,131 +131,215 @@ Jenkins itself is written in Java, but the Java it needs to run is already in th
 
 ## What "SCM" means
 
-**SCM** is *Source Control Management*: the system that stores the code's history (Git, SVN, …).
-Jenkins supports several, so its settings say "SCM" instead of "Git".
-
-The pipeline steps are read from the `Jenkinsfile` in the Git repository instead of being pasted
-into a text box in Jenkins. That way the pipeline is versioned, reviewed in pull requests and
-survives a Jenkins reinstall. It also means the `Jenkinsfile` must be pushed to GitHub: Jenkins
-reads it from there, not from a local folder.
+**SCM** is *Source Control Management*: the system that stores the code's history (Git, SVN…).
+The job reads the pipeline from the `Jenkinsfile` in the repository instead of a text box in
+Jenkins, so the pipeline is versioned and reviewed in pull requests like the code. It also means
+a change to the `Jenkinsfile` must be pushed to GitHub for Jenkins to see it.
 
 ## Setup
 
-1. **Build the image and start Jenkins**:
+Everything here can be done without the repository owner. Commands run from the root of your
+clone of the repository.
+
+### A. Run Jenkins with access to Docker
+
+Two changes from a plain Jenkins:
+
+- **Port 8090 instead of 8080**: the deployed stack uses 8080 for the Spark UI.
+- **Jenkins' data in the folder `/var/jenkins_home` on this PC, at the same path inside the
+  container**, instead of a Docker volume. `docker-compose.yml` mounts `./data` into the
+  containers, and that path is resolved by the PC's Docker, not inside Jenkins. The build's
+  folder (`/var/jenkins_home/workspace/...`) must therefore exist at the same path on the PC.
+
+1. **If you already run Jenkins** (from the `jenkins-home` volume), stop and remove the container
+   (its data stays in the volume):
+
+   ```bash
+   docker stop jenkins && docker rm jenkins
+   ```
+
+2. **Create the folder**, owned by the `jenkins` user of the image (UID 1000). If you already ran
+   Jenkins, copy its data in, so jobs, credentials and users are kept:
+
+   ```bash
+   sudo mkdir -p /var/jenkins_home
+   # only if you already ran Jenkins:
+   sudo cp -a /var/lib/docker/volumes/jenkins-home/_data/. /var/jenkins_home/
+   sudo chown -R 1000:1000 /var/jenkins_home
+   ```
+
+3. **Build the image and start Jenkins** with the Docker socket:
 
    ```bash
    docker build -t us-wildfires-jenkins jenkins/
    docker run -d --name jenkins --restart unless-stopped \
-     -p 8080:8080 -v jenkins-home:/var/jenkins_home us-wildfires-jenkins
+     -p 8090:8080 \
+     -v /var/jenkins_home:/var/jenkins_home \
+     -v /var/run/docker.sock:/var/run/docker.sock \
+     --group-add "$(stat -c %g /var/run/docker.sock)" \
+     us-wildfires-jenkins
    ```
 
-   The `jenkins-home` volume keeps jobs, plugins, users and build history when the container is
-   stopped or recreated. Stop it with `docker stop jenkins` and start it again with
-   `docker start jenkins`.
+   - `-p 8090:8080`: Jenkins at http://localhost:8090.
+   - `-v /var/jenkins_home:/var/jenkins_home`: same path on the PC and inside the container.
+   - `-v /var/run/docker.sock:...`: the Docker CLI inside Jenkins talks to the PC's Docker.
+   - `--group-add ...`: adds the `jenkins` user to the group that owns the socket, so it is
+     allowed to use it.
 
-2. **Get the initial admin password**:
+   Docker starts it again when the PC boots. To update the image later, run `docker build` again,
+   then `docker stop jenkins && docker rm jenkins` and the same `docker run`.
+
+4. **Check that Jenkins can use Docker** (it lists this PC's containers):
 
    ```bash
-   docker exec jenkins cat /var/jenkins_home/secrets/initialAdminPassword
+   docker exec jenkins docker ps
    ```
 
-3. Open http://localhost:8080, paste the password, choose **Install suggested plugins** (they
-   include Git, Pipeline, GitHub Branch Source and JUnit) and create your admin user.
+5. **First time only** (no data copied in step 2): get the admin password with
+   `docker exec jenkins cat /var/jenkins_home/secrets/initialAdminPassword`, open
+   http://localhost:8090, paste it, choose **Install suggested plugins** and create your admin
+   user. Otherwise log in with your usual user.
 
-4. **Create a GitHub token** (on your own GitHub account): **Settings → Developer settings →
-   Personal access tokens → Fine-grained tokens → Generate new token**:
-   - **Repository access**: *Public repositories* (read-only access to all public repositories).
-   - **Permissions**: none.
+6. In **Manage Jenkins → System → Jenkins URL**: `http://localhost:8090/`. The ✓/✗ on GitHub
+   link to this address.
 
-   Copy the token; GitHub only shows it once.
+7. **Stop the stack if you run it by hand** from your clone (`docker compose up`). The deployed
+   stack uses the same ports and cannot start while it is up:
 
-5. **Create the job**: **New Item** → name `us-wildfires-big-data` → **Multibranch Pipeline** → OK.
-   Then:
-   - **Branch Sources** → **Add source** → **GitHub**.
-     - **Credentials** → **Add** → **Jenkins**: kind *Username with password*, **Username**: your
-       GitHub username, **Password**: the token. Select it.
-     - **Repository HTTPS URL**: `https://github.com/Loperaa-Juan/US-Wildfires-Big-Data.git`
-       and click **Validate**.
+   ```bash
+   docker compose down
+   ```
+
+   From now on the deployed system is the one at http://localhost:5000. Stop it with
+   `docker compose -p wildfires down` when you want to run your own copy.
+
+When everything works, the old volume can be deleted with `docker volume rm jenkins-home`.
+
+### B. Configure Jenkins
+
+1. **GitHub token** (on your own GitHub account, which must have write access to the
+   repository): **Settings → Developer settings → Personal access tokens → Tokens (classic) →
+   Generate new token (classic)**, scope **`repo:status`** only. Jenkins needs it for two things:
+   - **Posting the ✓/✗ on each commit.** Writing a commit status needs `repo:status`; a
+     read-only token lets Jenkins build but every ✓/✗ fails silently (the build log shows
+     *Could not update commit status*). A fine-grained token cannot be used here: it only
+     reaches repositories owned by the account that creates it, and this one belongs to
+     `Loperaa-Juan`.
+   - **Scanning.** The scans use the GitHub API, which allows only 60 requests per hour without
+     a token (5,000 with one).
+
+2. **The job.** **New Item** → name `us-wildfires-big-data` → **Multibranch Pipeline** → OK (if it
+   already exists, open **Configure** instead). Then:
+   - **Branch Sources → Add source → GitHub**:
+     - **Credentials → Add → Jenkins**: kind *Username with password*, **Username**: your GitHub
+       username, **Password**: the token. Select it.
+     - **Repository HTTPS URL**: `https://github.com/Loperaa-Juan/US-Wildfires-Big-Data.git`,
+       then **Validate**.
      - **Behaviours**:
-       - **Delete** *Discover branches*. This is what stops pushes to branches from building.
-       - Keep *Discover pull requests from origin* with strategy *Merging the pull request with
-         the current target branch revision*.
-       - Keep *Discover pull requests from forks* (strategy *Merging…*, trust *From users with
-         Admin or Write permission*), so pull requests from teammates' forks are tested too. For
-         forks without write access, Jenkins uses the `Jenkinsfile` from `main` instead of the
-         one in the pull request, so a stranger cannot change what Jenkins runs.
+       - *Discover branches*, strategy *All branches*.
+       - *Discover pull requests from origin*, strategy *Merging the pull request with the
+         current target branch revision*.
+       - *Discover pull requests from forks*, same strategy, trust *From users with Admin or
+         Write permission* (for forks of anyone else, Jenkins runs the `Jenkinsfile` from `main`,
+         so a stranger cannot change what Jenkins runs).
+       - **Add → Filter by name (with wildcards)**: **Include** `main PR-*`, **Exclude** empty.
+         Pull requests are named `PR-1`, `PR-2`…, so this keeps `main` and every pull request,
+         and no other branch gets a job.
    - **Build Configuration**: *by Jenkinsfile*, **Script Path**: `Jenkinsfile`.
-   - **Scan Repository Triggers**: check **Periodically if not otherwise run**, **Interval**:
-     *5 minutes*. Save.
+   - **Scan Repository Triggers**: **Periodically if not otherwise run**, *5 minutes*.
 
-6. Saving starts a first scan. Open **Scan Repository Log**: it lists the open pull requests it
-   found. Under the job, the **Pull Requests** tab shows one job per pull request, each with a
-   build. The build page shows the *Install*, *Lint* and *Test* stages and **Test Result**.
+   Save. The scan log lists `main` and the open pull requests, and the job shows a **Branches**
+   tab (`main`) next to **Pull Requests**. Delete any other job you created while trying things
+   (for example `us-wildfires-big-data2`), so only one job builds each change.
 
-7. Open a test pull request into `main`. Within 5 minutes a `PR-<number>` job appears and builds.
-   Push another commit to that pull request and it is built again on the next scan. Pushing to a
-   branch without a pull request builds nothing.
+3. **Kaggle credential.** Get your token at [kaggle.com → Settings → API](https://www.kaggle.com/settings)
+   (*Create New Token* downloads `kaggle.json` with `username` and `key`). Then in
+   **Manage Jenkins → Credentials → System → Global credentials (unrestricted) → Add Credentials**:
+   - **Kind**: *Username with password*
+   - **Username**: the Kaggle `username`
+   - **Password**: the Kaggle `key`
+   - **ID**: `kaggle` (exactly this: the `Jenkinsfile` looks it up by this ID)
+   - **Description**: `Kaggle API token`
 
-## Later: webhook + ngrok
+   Jenkins stores it encrypted and the pipeline gets it only inside `withCredentials(...)`, as
+   the variables `KAGGLE_USERNAME` and `KAGGLE_KEY` that `docker-compose.yml` passes to the ETL.
+   If it appears in the console output, Jenkins replaces it with `****`.
 
-With a webhook, GitHub tells Jenkins as soon as a pull request is opened or updated, so builds
-start within seconds instead of up to 5 minutes later. Adding a webhook needs **admin access** to
-the repository, so the repository owner (`Loperaa-Juan`) has to do step 2.
-
-### Why ngrok is needed for the webhook
-
-With scanning, Jenkins makes the requests (outgoing), which works from any PC. A webhook is the
-other way around: GitHub's servers send the request to Jenkins. Jenkins runs at
-`localhost:8080`, which only exists on this machine, and the router blocks connections that come
-from the internet, so GitHub cannot reach it. [ngrok](https://ngrok.com/) opens a public HTTPS
-address (for example `https://abc123.ngrok-free.app`) and forwards every request it receives,
-through a tunnel, to the local Jenkins. ngrok is not needed if Jenkins runs on a server with a
-public address (a cloud VM, a company server).
-
-### Steps
-
-1. **Expose Jenkins with ngrok** (in a separate terminal, leave it running):
+4. **Optional: skip the Kaggle download in the first build.** If your clone already has the
+   dataset in `data/` (from running the system by hand), copy it into the folder of the `main`
+   build before it runs. The ETL finds the files and skips the download, the transform and the
+   cleaning:
 
    ```bash
-   ngrok http 8080
+   sudo mkdir -p /var/jenkins_home/workspace/us-wildfires-big-data_main
+   sudo cp -a data /var/jenkins_home/workspace/us-wildfires-big-data_main/
+   sudo chown -R 1000:1000 /var/jenkins_home/workspace/us-wildfires-big-data_main
    ```
 
-   Copy the `https://….ngrok-free.app` URL and set it in Jenkins under
-   **Manage Jenkins → System → Jenkins URL**.
+   The Kaggle credential is still used whenever the files are missing.
 
-2. **The repository owner adds the webhook**: **Settings → Webhooks → Add webhook**:
-   - **Payload URL**: `https://<your-ngrok-url>/github-webhook/` (the trailing `/` is required)
-   - **Content type**: `application/json`
-   - **Which events**: *Let me select individual events* → only **Pull requests**
+### C. Check it end to end
 
-   GitHub sends a test ping; it should show a green ✓ under **Recent Deliveries**.
+The `CD` stages only run once this `Jenkinsfile` is on `main`, so the first full run is the merge
+of the pull request that adds it.
 
-3. Nothing changes in the `Jenkinsfile` or the job: the GitHub source receives the webhook
-   itself. Keep the periodic scan as a safety net, but you can raise its interval (for example to
-   *1 day*) to catch anything a missed webhook skipped.
+1. **Pull request: tests only.** Push the branch and open (or update) its pull request into
+   `main`. Within 5 minutes (or with **Scan Repository Now**) its `PR-<number>` job builds
+   *Install*, *Lint* and *Test*; the `CD` stages show as skipped. The pull request shows the ✓.
 
-4. Open a pull request into `main`. A build starts within a few seconds.
+2. **Merge: the whole pipeline.** Merge it. Within 5 minutes the `main` job builds every stage.
+   The first build of `main` takes the longest: the ETL loads the fires into MongoDB and Spark
+   runs the aggregations, once for staging and once for the deploy (plus the Kaggle download and
+   the cleaning if you skipped B4). Later builds skip the download, the cleaning and the load.
+   When it is green, the deployed system answers on this PC:
 
-Keep in mind: the free ngrok URL changes every time ngrok restarts (the webhook then has to be
-updated, or use ngrok's free static domain), and events sent while the PC or ngrok is off are
-not retried by GitHub. The periodic scan picks them up, or click **Scan Repository Now**.
+   ```bash
+   curl localhost:5000/health
+   docker compose -p wildfires ps
+   ```
+
+3. **A failing test blocks the deploy.** On a branch, make a test fail (for example change an
+   expected value in `tests/test_transform.py`), open a pull request and merge it. The `main`
+   build stops at *Test*, the following stages show as skipped, and the deployed system keeps
+   the previous version (`docker compose -p wildfires ps` shows the containers' age unchanged).
+   Revert the change with another pull request.
+
+## Day to day
+
+- **Adding tests**: see [`tests/README.md`](../tests/README.md). New API checks go in
+  [`api-tests.sh`](api-tests.sh) as one more `check` line.
+- **After turning the PC on**: Docker starts Jenkins and the deployed system by themselves.
+  Changes made while the PC was off are found by the next scan.
+- **The deployed system**: `docker compose -p wildfires ps`, `docker compose -p wildfires logs api`.
 
 ## Troubleshooting
 
-- **No build after opening a pull request**: wait 5 minutes or click **Scan Repository Now**, then
-  read the **Scan Repository Log**. Check that the pull request targets `main`.
-- **The scan log mentions a rate limit**: the job has no credentials, or the token expired.
-  Create a new token (setup step 4) and select it in the GitHub source.
-- **Pushes to branches still start builds**: *Discover branches* is still in the **Behaviours**.
-  Remove it and save; Jenkins deletes the branch jobs on the next scan.
-- **A pull request into another branch shows a build with skipped stages**: expected, the
-  `Jenkinsfile` only runs the stages for pull requests into `main`.
-- **The webhook shows a red ✗ in Recent Deliveries**: ngrok is not running, the URL is wrong,
-  or the trailing `/` of `/github-webhook/` is missing. Open the delivery to see the response.
-- **"HTTP ERROR 403 No valid crumb was included in the request" when saving**: the crumb is
-  Jenkins' anti-forgery token, tied to your login session, and that session ended (the container
-  restarted while the page was open, the session timed out, or the page was opened at a different
-  address such as `127.0.0.1` or the ngrok URL). Nothing was saved: reload the configure page,
-  log in again if asked, enter the settings again and save. Always use `http://localhost:8080`.
-- **A stage fails**: open the build → **Console Output**. Run the same command locally
-  (`uv run ruff check .` or `uv run pytest`) to reproduce it.
+- **No build after a pull request or a merge**: click **Scan Repository Now** and read the
+  **Scan Repository Log**. Check that the pull request targets `main` and that the Behaviours
+  include *Discover branches* and the filter `main PR-*` (B2).
+- **Every branch gets a job**: the *Filter by name (with wildcards)* behaviour is missing (B2).
+- **The build runs but no ✓/✗ appears on GitHub** (the build log shows *Could not update commit
+  status*): the token cannot write commit statuses. Create a classic token with `repo:status`
+  (B1), from an account with write access to the repository, and select it.
+- **The scan log mentions a rate limit**: the GitHub source has no credentials, or the token
+  expired. Create a new token (B1) and select it.
+- **`permission denied while trying to connect to the Docker daemon socket`**: Jenkins was
+  started without `--group-add` or without the socket mount. Recreate the container (A3).
+- **The ETL fails with `Permission denied` on `/app/data`, or finds no data**: Jenkins' folder
+  is not at the same path on the PC (`-v /var/jenkins_home:/var/jenkins_home`, A2–A3).
+- **`Could not find credentials entry with ID 'kaggle'`**: the credential's ID is not exactly
+  `kaggle` (B3).
+- **Deploy fails with `port is already allocated`**: something else uses one of the stack's
+  ports, usually the stack started by hand from your clone (A7) or an old Jenkins on 8080.
+  `docker ps` shows who has it.
+- **The build waits a long time at *Start services***: the ETL and Spark are running. Follow them
+  with `docker compose -p wildfires-staging logs -f etl spark`. If one fails, the build fails and
+  prints the last log lines of every staging container.
+- **"HTTP ERROR 403 No valid crumb was included in the request" when saving**: the login session
+  ended (Jenkins restarted while the page was open, or the page was opened at another address).
+  Nothing was saved: reload the page, log in again and save again.
+- **A CI stage fails**: open the build → **Console Output**, and run the same command locally
+  (`uv sync --locked`, `uv run ruff check .` or `uv run pytest`) to reproduce it.
+- **Install fails with `The lockfile at uv.lock needs to be updated`**: someone changed the
+  dependencies in `pyproject.toml` without updating `uv.lock`. Run `uv lock` and commit
+  `uv.lock`. Add dependencies with `uv add <package>` to avoid it.
