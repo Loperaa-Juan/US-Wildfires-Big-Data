@@ -90,6 +90,7 @@ the Kaggle download and the Dask cleaning only happen once.
 | [`Jenkinsfile`](../Jenkinsfile) | The pipeline: the stages above and when each one runs. |
 | [`jenkins/Dockerfile`](Dockerfile) | The Jenkins image: Jenkins plus `uv`, the Docker CLI (with compose and buildx) and `jq`. |
 | [`jenkins/docker-compose.staging.yml`](docker-compose.staging.yml) | Turns [`docker-compose.yml`](../docker-compose.yml) into the staging stack (no published ports). |
+| [`jenkins/PIPELINE-FLOW.md`](PIPELINE-FLOW.md) | Why a pull request only runs CI and a merge runs the full pipeline: the job settings and the `when` conditions. |
 | [`jenkins/api-tests.sh`](api-tests.sh) | The API tests: `curl` to `/health`, `/fires/near`, `POST /fires/within`, `/fires/nearest`, `/stats/hotspots` and an invalid request, checking each JSON response with `jq`. |
 | [`tests/`](../tests/README.md) | The unit tests run by the *Test* stage, and how to add one. |
 
