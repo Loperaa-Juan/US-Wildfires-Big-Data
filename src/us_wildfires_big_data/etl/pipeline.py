@@ -8,8 +8,9 @@ redo the work. To rebuild a step, delete its output (data/processed/... or the M
 collection) or run that step's module directly, e.g. `python -m us_wildfires_big_data.etl.clean`.
 """
 
-from pymongo import MongoClient
 import pyarrow.parquet as pq
+from pymongo import MongoClient
+from pymongo.errors import PyMongoError
 
 from us_wildfires_big_data.config import (
     FIRES_CLEAN,
@@ -19,6 +20,7 @@ from us_wildfires_big_data.config import (
     MONGO_URI,
 )
 from us_wildfires_big_data.etl import clean, download, load_mongo, transform
+from us_wildfires_big_data.etl.cluster import shutdown_cluster
 
 
 def mongo_is_loaded() -> bool:
@@ -26,15 +28,15 @@ def mongo_is_loaded() -> bool:
     try:
         with MongoClient(MONGO_URI) as client:
             loaded = client[MONGO_DB][MONGO_COLLECTION].count_documents({})
-        
+
         if loaded == 0 or not FIRES_CLEAN.exists():
             return False
 
         dataset = pq.ParquetDataset(FIRES_CLEAN)
         total_rows = sum(fragment.metadata.num_rows for fragment in dataset.fragments)
-        
+
         return loaded == total_rows
-    except Exception as e:
+    except (PyMongoError, OSError) as e:
         print(f"Warning: Could not verify MongoDB row count ({e}). Proceeding to load.")
         return False
 
@@ -61,6 +63,9 @@ def main() -> None:
     else:
         load_mongo.main()
 
+    # Only after a successful run: if a step fails, the cluster stays up to rerun it by hand
+    print("Stopping the Dask cluster")
+    shutdown_cluster()
     print("Pipeline finished")
 
 

@@ -34,3 +34,20 @@ COUNTIES_ZIP = RAW_DATA / "cb_2021_us_county_20m.zip"
 # start a local cluster with DASK_WORKERS workers, one per logical processor by default
 DASK_SCHEDULER = os.getenv("DASK_SCHEDULER")
 DASK_WORKERS = int(os.getenv("DASK_WORKERS", os.cpu_count() or 1))
+
+# Spark: master URL (local[*] runs Spark inside the driver's process) and the MongoDB connector.
+# The connector must match the Scala version of pyspark: Spark 4 is built with Scala 2.13 and
+# needs connector 11.x (10.x is for Spark 3 / Scala 2.12)
+SPARK_MASTER = os.getenv("SPARK_MASTER", "local[*]")
+SPARK_DRIVER_MEMORY = os.getenv("SPARK_DRIVER_MEMORY", "4g")
+SPARK_EXECUTOR_MEMORY = os.getenv("SPARK_EXECUTOR_MEMORY", "2g")
+# Address the executors use to reach the driver in a cluster; defaults to the driver's own IP
+SPARK_DRIVER_HOST = os.getenv("SPARK_DRIVER_HOST")
+MONGO_SPARK_CONNECTOR = os.getenv(
+    "MONGO_SPARK_CONNECTOR", "org.mongodb.spark:mongo-spark-connector_2.13:11.1.0"
+)
+
+# Spark aggregations: side of each grid cell in degrees (0.5° ≈ 55 km of latitude), and the
+# z-score a cell's fire count must reach to count as a hotspot (mean + 2 std by default)
+GRID_CELL_DEGREES = float(os.getenv("GRID_CELL_DEGREES", "0.5"))
+HOTSPOT_MIN_ZSCORE = float(os.getenv("HOTSPOT_MIN_ZSCORE", "2"))

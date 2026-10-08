@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-# Column names as written by etl/transform.py 
+# Column names as written by etl/transform.py
 LAT, LON, ID = "latitude", "longitude", "fod_id"
 
 

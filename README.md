@@ -29,5 +29,39 @@ is downloaded from Kaggle, cleaned with Dask and loaded into MongoDB as GeoJSON 
    docker compose up --build
    ```
 
-   This starts MongoDB and the Dask cluster and runs the whole pipeline. When it finishes, the
-   data is in `mongodb://localhost:27017` (database `wildfires`, collection `fires`).
+   This starts MongoDB and runs the system in three stages, one after the other:
+
+   1. **Dask**: the Dask cluster starts and the `etl` service downloads, cleans and loads the
+      fires into `mongodb://localhost:27017` (database `wildfires`, collection `fires`). Then
+      it stops the Dask cluster.
+   2. **Spark**: only then the Spark cluster starts (one master, two workers) and the `spark`
+      service computes the spatial and temporal aggregations and saves them
+      in new collections: `fires_by_grid`, `fires_hotspots`, `fires_by_hour`,
+      `fires_by_weekday`, `fires_by_month`, `fires_by_year`, `fires_by_state` and
+      `fires_by_cause`.
+   3. **API**: the Flask API starts on http://localhost:5000.
+
+   Dashboards: Dask at http://localhost:8787 and Spark at http://localhost:8080. To run the
+   Spark aggregations again: `docker compose run --rm spark`.
+
+## API
+
+All fire queries return GeoJSON FeatureCollections. `cause`, `state` and `year` are optional
+filters on every fire query; `limit` defaults to 100 (max 1000).
+
+| Endpoint | MongoDB query | Example |
+|---|---|---|
+| `GET /fires/near` | `$near`: fires within `radius_km` (default 10), nearest first | `/fires/near?lat=34.05&lon=-118.25&radius_km=5` |
+| `POST /fires/within` | `$geoWithin`: fires inside a GeoJSON Polygon/MultiPolygon (or Feature) sent as the body | see below |
+| `GET /fires/nearest` | `$geoNear` aggregation: nearest fires within `max_km` (default 50), with `distance_km` | `/fires/nearest?lat=37.77&lon=-122.42&year=2015` |
+| `GET /stats/<name>` | Spark results: `grid`, `hotspots`, `hour`, `weekday`, `month`, `year`, `state`, `cause` | `/stats/hotspots?limit=10` |
+| `GET /health` | MongoDB ping and number of fires | `/health` |
+
+```bash
+curl -X POST "localhost:5000/fires/within?limit=10&cause=Lightning" \
+  -H "Content-Type: application/json" \
+  -d '{"type": "Polygon", "coordinates": [[[-118.7, 33.7], [-117.9, 33.7], [-117.9, 34.4], [-118.7, 34.4], [-118.7, 33.7]]]}'
+```
+
+Invalid parameters return `400` with a JSON message.
+

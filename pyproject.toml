@@ -9,15 +9,21 @@ authors = [
 requires-python = ">=3.13"
 dependencies = [
     "dask[dataframe,distributed]>=2026.8.0",
+    "flask>=3.1.3",
     "geopandas>=1.2.0",
+    "gunicorn>=26.2.0",
     "kagglehub>=1.0.2",
     "pandas>=3.0.6",
     "pymongo>=4.18.2",
-    "pyspark>=3.5.0",
 ]
 
 [project.scripts]
 us-wildfires-big-data = "us_wildfires_big_data.etl.pipeline:main"
+
+[project.optional-dependencies]
+spark = [
+    "pyspark>=4.0,<5",
+]
 
 [build-system]
 requires = ["uv_build>=0.12.18,<0.13.0"]
