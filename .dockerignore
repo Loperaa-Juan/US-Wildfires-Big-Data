@@ -9,3 +9,5 @@ notebooks
 tests
 *.docx
 *:Zone.Identifier
+frontend/node_modules
+frontend/dist
