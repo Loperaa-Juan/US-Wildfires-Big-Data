@@ -29,7 +29,7 @@ is downloaded from Kaggle, cleaned with Dask and loaded into MongoDB as GeoJSON 
    docker compose up --build
    ```
 
-   This starts MongoDB and runs the system in three stages, one after the other:
+   This starts MongoDB and runs the system in four stages, one after the other:
 
    1. **Dask**: the Dask cluster starts and the `etl` service downloads, cleans and loads the
       fires into `mongodb://localhost:27017` (database `wildfires`, collection `fires`). Then
@@ -40,6 +40,9 @@ is downloaded from Kaggle, cleaned with Dask and loaded into MongoDB as GeoJSON 
       `fires_by_weekday`, `fires_by_month`, `fires_by_year`, `fires_by_state` and
       `fires_by_cause`.
    3. **API**: the Flask API starts on http://localhost:5000.
+   4. **Frontend**: the React dashboard starts on **http://localhost:3000**: the Spark grid
+      and hotspots on a map, the temporal and spatial aggregations, and the `$near`,
+      `$geoNear` and `$geoWithin` queries run from the map.
 
    Dashboards: Dask at http://localhost:8787 and Spark at http://localhost:8080. To run the
    Spark aggregations again: `docker compose run --rm spark`.
@@ -65,3 +68,20 @@ curl -X POST "localhost:5000/fires/within?limit=10&cause=Lightning" \
 
 Invalid parameters return `400` with a JSON message.
 
+## Frontend
+
+React + TypeScript (Vite) in `frontend/`, managed with `pnpm`. In Docker, nginx serves the
+build and forwards `/api/*` to the API, so the browser only talks to one origin.
+
+To work on it without Docker (with the API running on port 5000):
+
+```bash
+cd frontend
+pnpm install
+pnpm dev     # http://localhost:3000, /api is forwarded to http://localhost:5000
+pnpm test    # unit tests (vitest)
+pnpm build   # type check + production build
+```
+
+The unit tests also run as a Docker build stage, which is what CI uses:
+`docker build -f docker/frontend.Dockerfile --target test .`

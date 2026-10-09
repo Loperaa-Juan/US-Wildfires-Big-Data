@@ -11,6 +11,8 @@
 #             aggregations on them, saves them in MongoDB and exits.
 #   3. API:   the Flask API starts and serves the fires and the Spark results on
 #             http://localhost:5000.
+#   4. Web:   the React frontend (nginx) starts on http://localhost:3000 and shows the Spark
+#             results and the geospatial queries, calling the API through /api.
 #
 # If a stage fails, the next one does not start.
 
@@ -182,6 +184,20 @@ services:
         condition: service_healthy
       spark:
         condition: service_completed_successfully
+
+  # Stage 4 (frontend). nginx serves the React build and forwards /api/* to the API service,
+  # so it starts once the API answers its healthcheck.
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/frontend.Dockerfile
+    image: us-wildfires-big-data-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:80" # http://localhost:3000
+    depends_on:
+      api:
+        condition: service_healthy
 
 volumes:
   mongo-data:
