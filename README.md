@@ -85,3 +85,9 @@ pnpm build   # type check + production build
 
 The unit tests also run as a Docker build stage, which is what CI uses:
 `docker build -f docker/frontend.Dockerfile --target test .`
+
+## Team members
+
+- Juan José Lopera Londoño ([@Loperaa-Juan](https://github.com/Loperaa-Juan))
+- Antonio Patiño Mejía ([@Antonysw13](https://github.com/Antonysw13))
+- Jairo Alberto Mejía Ramirez ([@Jairo-commit](https://github.com/Jairo-commit))
