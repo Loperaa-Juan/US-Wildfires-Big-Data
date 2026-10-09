@@ -47,6 +47,78 @@ is downloaded from Kaggle, cleaned with Dask and loaded into MongoDB as GeoJSON 
    Dashboards: Dask at http://localhost:8787 and Spark at http://localhost:8080. To run the
    Spark aggregations again: `docker compose run --rm spark`.
 
+## How to run it with Jenkins
+
+Jenkins runs locally in a container and uses this PC's Docker to test, build and deploy the
+system. Every pull request into `main` is tested; every change that reaches `main` is tested,
+built, checked through the API and deployed on http://localhost:5000. The full guide, with the
+reasons behind each step and troubleshooting, is in [`jenkins/JENKINS.md`](jenkins/JENKINS.md).
+
+1. Stop the stack if you started it by hand (the deployed stack uses the same ports):
+
+   ```bash
+   docker compose down
+   ```
+
+2. Create Jenkins' data folder. It must have the same path on the PC and inside the container:
+
+   ```bash
+   sudo mkdir -p /var/jenkins_home
+   sudo chown -R 1000:1000 /var/jenkins_home
+   ```
+
+3. Build the Jenkins image (Jenkins plus `uv`, the Docker CLI and `jq`) and start it with access
+   to the PC's Docker:
+
+   ```bash
+   docker build -t us-wildfires-jenkins jenkins/
+   docker run -d --name jenkins --restart unless-stopped \
+     -p 8090:8080 \
+     -v /var/jenkins_home:/var/jenkins_home \
+     -v /var/run/docker.sock:/var/run/docker.sock \
+     --group-add "$(stat -c %g /var/run/docker.sock)" \
+     us-wildfires-jenkins
+   ```
+
+   Check that Jenkins can use Docker with `docker exec jenkins docker ps`.
+
+4. Get the admin password, open http://localhost:8090, paste it, choose **Install suggested
+   plugins** and create your admin user:
+
+   ```bash
+   docker exec jenkins cat /var/jenkins_home/secrets/initialAdminPassword
+   ```
+
+   Then set **Manage Jenkins → System → Jenkins URL** to `http://localhost:8090/`.
+
+5. Add the credentials:
+   - **GitHub**: a classic personal access token with the `repo:status` scope, from an account
+     with write access to the repository.
+   - **Kaggle**: in **Manage Jenkins → Credentials → System → Global credentials → Add
+     Credentials**, kind *Username with password*, with the Kaggle `username` and `key` and the
+     ID `kaggle` (exactly this).
+
+6. Create the job: **New Item** → `us-wildfires-big-data` → **Multibranch Pipeline**.
+   - **Branch Sources → GitHub**: the GitHub credential and
+     `https://github.com/Loperaa-Juan/US-Wildfires-Big-Data.git`.
+   - **Behaviours**: *Discover branches* (all branches), *Discover pull requests from origin*
+     and *from forks* (merging with the target branch), and *Filter by name (with wildcards)*
+     including `main PR-*`.
+   - **Build Configuration**: *by Jenkinsfile*, script path `Jenkinsfile`.
+   - **Scan Repository Triggers**: periodically, every *5 minutes*.
+
+7. Check it. Open a pull request into `main`: within 5 minutes (or with **Scan Repository Now**)
+   its `PR-<number>` job runs *Install → Lint → Test* and GitHub shows ✓ or ✗. Merge it: the
+   `main` job also builds the images, starts a staging stack, runs the API tests and deploys.
+   When it is green:
+
+   ```bash
+   curl localhost:5000/health
+   docker compose -p wildfires ps
+   ```
+
+   If any test fails, nothing is deployed and the previous version keeps running.
+
 ## API
 
 All fire queries return GeoJSON FeatureCollections. `cause`, `state` and `year` are optional
